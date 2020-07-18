@@ -1,0 +1,715 @@
+Get sequences - either as .txt, .fastq, or .gz (zipped .txt)
+wget https://......../....gz
+wget -i list.txt 
+
+put all the links to files as a list in "list.txt"
+
+Can check fastq file contents with:
+
+zcat filename | head
+
+will look something like this:
+@C00119:97:HH3VGADXX:1:1101:1175:2036 1:N:0:2
+NCCTCGATGACAGCAGGCTCCACTTTATCCAGGTCCTCCTTGACACTCATC
++
+#0<FFFFFFFFFFIIFIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+@C00119:97:HH3VGADXX:1:1101:1107:2069 1:N:0:2
+NGTGTTTTGCCTGTATATATGTGTGTGCACCACATTTGTGTAGTGCCCTGG
++
+#0<FFFFFFFFFFIIIFFIIIIIIIIIIIIIIIIFIIIIIIIIIIIIIIII
+@C00119:97:HH3VGADXX:1:1101:1138:2076 1:N:0:2
+ATCTGATCCCGTGGTGAAGGCATAGCCATTGGGGAAGAAAGCCACGGCATT
+
+Convert to fastqc
+Copy in "fastqc.sh" and "fastqc_dir.sh" (will perform "fastqc.sh" on all target files in directory)
+remember to change target directory of script in "fastqc_dir.sh"
+
+sh fastqc_dir.sh [script location of ..._dir.sh] [sequences directory] [output directory]
+ 
+
+Check quality (.html)
+Note GC content (50% or thereabouts is good)
+Note Phred scores (want about 30 on average)
+
+Trimming
+Get Trim_Galore.sh and Trim_Galore_dir.sh into sequences folder (if trimming is wise depending on sequence length)
+Make sure to change "...dir.sh" so that it targets the right directory
+sh absolutepath/trim_galore_directory.sh absolutepath/directory score length
+
+Check QC of trimmed sequences as above
+
+Have a "data" and "results" folder in your main folder named as project name, then a "sequences" folder under "data"
+Make sure in your main directory (project directory) to have "slurm.tmpl," ".BatchJobs.R," and "hisat2.param" (or "tophat.param") copied as shown
+Make a "targets.txt" file in main directory denoting the sequences to target (CMPset1 says what to compare):
+
+# <CMP> CMPset1: d8-d0, etc.-etc2.
+FileName	SampleName	Factor
+/...../..../..../something-L5-P13-CAGATC-Sequences.txt.gz_trimmed.fq.gz	Mayinga.204.d0	d0
+same as above (diff sample)	same as above (diff name)	      same as above (diff day/experimental condition)
+
+Make sure you have the right reference genome stuff in your /data folder (above sequences) - link these from original location (ln -s) or download:
+Macaca_mulatta.MMUL_1.78.gtf
+Macaca_mulatta.MMUL_1.dna.toplevel.fa
+Macaca_mulatta.MMUL_1.dna.toplevel.fa.1.bt2
+Macaca_mulatta.MMUL_1.dna.toplevel.fa.2.bt2
+Macaca_mulatta.MMUL_1.dna.toplevel.fa.3.bt2
+Macaca_mulatta.MMUL_1.dna.toplevel.fa.4.bt2
+Macaca_mulatta.MMUL_1.dna.toplevel.fa.rev.1.bt2
+Macaca_mulatta.MMUL_1.dna.toplevel.fa.rev.2.bt2
+Macaca_mulatta.sqlite <- should get this through pipeline, but it may be easier if you already have it from previous
+Rhesus_annotations.xls
+
+IMPORTANT: Make sure you have the right alignment .param - for ".bt2" files above use tophat (has bowtie2 in it), and for ".ht2" files above use hisat2. ALSO EDIT THE .param FILE TO LINK TO THE RIGHT REFERENCE STUFF
+
+enter high memory or higher memory subnode
+
+srun -p highmem --mem=100g --time=10:00:00 --pty bash -l
+#Note: the highmemory subnodes are all very biased towards (ucr people?) certain people and if you're lower priority than someone else using it, you may get kicked off - better to use one of the other options
+or
+srun -p gpu --gres=gpu:4 --mem=100g --time=6:00:00 --pty bash -l
+or
+srun --mem=1gb --cpus-per-task 1 --ntasks 1 --time 6:00:00 --pty bash -l
+or
+srun --mem=20gb --cpus-per-task 1 --ntasks 1 --time 10:00:00 --pty bash -l
+
+Load R
+
+library(systemPipeR) 
+library(GenomicFeatures) 
+library(BiocParallel) 
+library(ape) 
+library(DESeq2) 
+library(edgeR)
+
+
+
+targets <- read.delim("targets.txt", comment.char = "#") 
+targets
+
+
+args <- systemArgs(sysma="tophat.param", mytargets="targets.txt")
+ 
+# If you get errors here (row.names, out of bounds, etc.) this means that the hisat2.param/tophat.param file is (for whatever reason) not functional. Make a new one, or cannibalize one from a project you know succeeded and then redefine the target reference. 
+
+moduleload(modules(args))
+
+# check to see that arguments link to right files from targets
+sysargs(args[1])
+
+# allocate resources
+resources <- list(walltime="20:00:00", ntasks=1, ncpus=cores(args), memory="20G")
+
+# submit jobs - change Njobs to = number of sequences aligning
+reg <- clusterRun(args, conffile=".BatchJobs.R", template="slurm.tmpl", Njobs=18, runid="01", resourceList=resources)
+
+If there is an error here (function not found) you need a new R version - outside R, do "module load R/[pick a new version here (3.4.0 ex.)]"
+
+exit R
+
+use squeue (or qstat) -u [username] to see job status - should take a while (6-8 hours), when jobs done can continue
+
+after job finished, enter R again - remember to make sure R is right version before re-entering (module load R/[])
+Load all previous libraries again
+create targets and args objects again and check that everything is as it should be
+
+targets <- read.delim("targets.txt", comment.char = "#") 
+targets
+args <- systemArgs(sysma="tophat.param", mytargets="targets.txt") 
+file.exists(outpaths(args))
+
+# write table for alignment stats
+read_statsDF <- alignStats(args=args) 
+write.table(read_statsDF, file="results/alignStats.xls", row.names=FALSE, quote=FALSE, sep="\t")
+
+
+Here, make sure to exclude any samples which didn't align properly (80% or lower alignment) from targets.txt and later on, from CountDFeByg file (if forgot to exclude from targets here).
+
+***************Counting and Normalization**************
+LOAD ALL PREVIOUS LIBRARIES 
+
+At this point it is VERY important that you check to make sure your bam files have the correct format - check that your chromosome annotation ("chr1, chr2, X, etc." or "1, 2, 3, 4, etc.") are in the same format as your .gtf referrence annotation - Cufflinks will USE THIS to assign relative abundances to annotated genes - if it can't find the annotated gene because the chromosomal locations don't match, it will just give it a 0 for abundance (FPKM, etc.) and your CUFF transfrags will be the only genes with any abundance values.
+#to check .gtf 
+
+nano <>.gtf
+
+#to check .fa
+
+bowtie2-inspect -n <>.fa
+
+#If they do not match, you can change the chr style with the following code (make sure you make a "test_accepted_hits.bam" of each "accepted_hits.bam" file in case it doesn't work - may delete the whole input file :) ):
+#view your bam file 
+samtools view -H accepted_hits.bam
+#create a copy of your "accepted_hits.bam" file in case this destroys it (or w/e)
+cp accepted_hits.bam copy_accepted_hits.bam
+samtools view -H accepted_hits.bam | sed -e 's/SN:\([0-9XY]\)/SN:chr\1/' -e 's/SN:MT/SN:chrM/' | samtools reheader - accepted_hits.bam > chr_accepted_hits.bam
+#then delete the .bai index of the original bamfiles
+#next re-index - go to results directory and do:
+ls *.bam | xargs -n1 -P5 samtools index
+#All of this can be avoided if you make sure that your gtf and reference fasta (mother file) have same annotation for chr and other features
+
+#Now to actually start counting with Cufflinks - You will first set up the batch script parameters and place it in the working directory. Check THAT ALL PATHS ARE CORRECT
+#cufflinks_run.sh:
+#Important to change: job-name, -p <partition>, output location of each cufflinks run, GTF-guide location, path to bam files ("accepted_hits.bam" as output from Tophat)
+
+#-N normalizes to upper quartile of mapped loci as opposed to all transcripts to correct for genes which may be expressed at a low level
+#-u Tells Cufflinks to do an initial estimation procedure to more accurately weight reads mapping to multiple locations in the genome
+# Also, compared to HT-seq, Cufflinks takes a VERY long itme (~10 hours depending on the number of reads) - it makes sense to submit each sample as a separate job. Even then, some jobs may actually get killed - make sure you are checking your bams for truncation and EOF (end of field) markers with samtools!
+
+#!/bin/bash --login
+
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=10G
+#SBATCH --time=2-00:15:00
+#SBATCH --mail-user=kmaroney@uci.edu
+#SBATCH --job-name="cufflinks_counting"
+#SBATCH -p batch
+
+#print current date
+date
+
+#load modules
+module load cufflinks/2.2.1
+module load htslib
+
+cd $SLURM_SUBMIT_DIR
+
+# "sample" is provided by sbatch command line through "-v xxx" <- old (actually different with SLURM (this was PBS))
+sample_bam=/bigdata/messaoudilab/kmaroney/Projects/LCMV_specific_CD8Tcells/results/${sample}/accepted_hits.bam
+
+if [ ! -d ./results/$sample/cufflinksOut ]; then
+  mkdir ./results/$sample/cufflinksOut
+
+else
+  if [ -e ./results/$sample/cufflinksOut/cufflinks.log ]; then
+    rm ./results/$sample/cufflinksOut/cufflinks.log
+  fi
+fi
+
+
+# Run cufflinks
+cufflinks -p 8 -o ./results/$sample/cufflinksOut \
+  -u -N \
+  --max-bundle-frags 1000000 \
+  -G /bigdata/messaoudilab/kmaroney/Reference_Genomes/Mus_Musculus/mm10/mm10.refGene.gtf \
+  -b /bigdata/messaoudilab/kmaroney/Reference_Genomes/Mus_Musculus/mm10/mm10.AllChromConcat.fa \
+  $sample_bam > ./results/$sample/cufflinksOut/cufflinks.log 2>&1
+
+squeue -l $SLURM_JOBID
+ 
+ 
+#Also set up a script which will loop through all your different bam files - replace "samples" with the name of the tophat directories for each of your samples
+#Cufflinks_job_submit.sh:
+
+for S in  sample sample sample sample
+
+do
+ sbatch --export=sample="$S" cufflinks_run.sh
+done
+
+#Then just run the loop which will pipe them to be each submitted to the cluster as different jobs:
+
+sh cufflinks_job_submit.sh
+
+#This will take some time depending on your "-G or -g" option, which will determine whether it bothers with any genes not annotated in your reference .gtf file
+Any "CUFF_*" files are transfrags (not annotated) and frequently can make the job take so long it actually gets killed - you can use --GTF-guide if you want (instead of -G), but I frequently find that this makes the counting take ASTRONOMICALLY longer (>2 days), which through the cluster will usually result in your job failing before it gets to many genes you actually care about (will be missing with ctrl-w in your output files). Have fun with this :) !
+
+#cufflinks will output 4 files: 
+"transcripts.gtf" - this is the one we will use for downstream steps
+"skipped.gtf" - any transcripts that were skipped (will be 0 B if not using a Mask gtf file (tells cufflinks any transcripts to exclude from counting) - as long as rRNA is depleted, this shouldn't be a problem)
+"isoforms.fpkm_tracking" - different spliced versions of mRNA, shRNA, miRNA, etc. pertaining to diff features (genes, exons, etc.)
+"genes.fpkm_tracking" - useful for looking at gene fpkm's as cufflinks is being run, but not used for downstream pipeline
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Running Cuffmerge
+#This will run Cuffmerge on all the transcripts.gtf files output within your tophat directories and merge the assemblies into a master transcriptome
+#First make a file named "assemblies.txt" through nano
+
+./results/Naive_WT_3_S3_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Naive_WT_2_S2_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Naive_WT_1_S1_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Naive_KO_3_S6_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Naive_KO_2_S5_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Naive_KO_1_S4_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day30_WT_GP33_3_S15_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day30_WT_GP33_2_S14_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day30_WT_GP33_1_S13_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day30_KO_GP33_3_S18_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day30_KO_GP33_2_S17_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day30_KO_GP33_1_S16_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day09_WT_GP33_3_S9_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day09_WT_GP33_2_S8_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day09_WT_GP33_1_S7_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day09_KO_GP33_3_S12_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day09_KO_GP33_2_S11_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+./results/Day09_KO_GP33_1_S10_L001_L002_R1_001_trimmed.fq.gz.tophat/cufflinksOut/transcripts.gtf
+#Then simply run the following command on that file:
+
+cuffmerge -g /rhome/kmaroney/bigdata/Reference_Genomes/Mus_Musculus/mm10/mm10.refGene.gtf -s /rhome/kmaroney/bigdata/Reference_Genomes/Mus_Musculus/mm10/mm10.AllChromConcat.fa -p 8 -o ./results/CuffMerge_Summary/ assemblies.txt
+OR
+#run this script in the working directory:
+#cuffmerge_script.sh:
+
+# Create a list of all samples' GTF files: toMerge_list.txt
+if [ -a toMerge_list.txt ]
+ rm toMerge_list.txt
+fi
+
+for sample in Naive_WT_3_S3_L001_L002_R1_001_trimmed.fq.gz.tophat Naive_WT_2_S2_L001_L002_R1_001_trimmed.fq.gz.tophat 
+do
+  echo /bigdata/messaoudilab/kmaroney/Projects/LCMV_specific_CD8Tcells/results/${sample}/cufflinksOut/transcripts.gtf >> toMerge_list.txt
+done
+
+if [ -d cuffmergeSummary ]; then
+  rm -R cuffmergeSummary
+fi
+
+module load cufflinks
+module load htslib
+
+# Run cuffmerge
+nohup cuffmerge -p 4 -o cuffmergeSummary \
+  -g /bigdata/messaoudilab/kmaroney/Reference_Genomes/Mus_Musculus/mm10/mm10.refGene.gtf \
+  -s /bigdata/messaoudilab/kmaroney/Reference_Genomes/Mus_Musculus/mm10/mm10.AllChromConcat.fa \
+  toMerge_list.txt > cuffmerge.log 2>&1 &
+
+#make sure to change the correct references and the sample names, then run with "sh cuffmerge_script.sh" to run in background (nohup)
+
+#Converting your FPKM-corrected counting back to counts with HT-seq:
+
+#First sort your bam files
+# SortBam.sh:
+#!/bin/bash --login
+
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=2G
+#SBATCH --time=1-00:15:00
+#SBATCH --mail-user=kmaroney@uci.edu
+#SBATCH --job-name="bamSort"
+#SBATCH -p batch
+
+#print current date
+date
+
+#load modules
+module load samtools
+
+cd $SLURM_SUBMIT_DIR
+
+# "sample" is provided by sbatch command line through "-v xxx"
+sample_bam=/bigdata/messaoudilab/kmaroney/Projects/LCMV_specific_CD8Tcells/results/${sample}/accepted_hits.bam
+
+# Run samtools sort
+samtools sort -n -o ${SLURM_SUBMIT_DIR}/${sample}.nameSorted.bam -T ${SLURM_SUBMIT_DIR}/${sample}_tmp $sample_bam
+
+squeue -l $SLURM_JOBID 
+
+# Then make a Loop as before 
+# SortBam_job_submit.sh:
+
+for S in  sample sample sample sample
+
+do
+ sbatch --export=sample="$S" SortBam.sh
+done
+
+# Count the reads with HT-seq:
+#change "gene_id" to whatever identifier in the merge.gtf that you want things to be named by (XLOC... ewww -> selplg better!)
+# countreads.sh:
+#!/bin/bash --login
+
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=2G
+#SBATCH --time=1-00:15:00
+#SBATCH --mail-user=kmaroney@uci.edu
+#SBATCH --job-name="Count_Reconstitution"
+#SBATCH -p batch
+
+#print current date
+date
+
+#load either the module ("module load <>") or load the Python program previously installed in .local/bin ("
+conda init bash && source ~/.bashrc
+conda activate Snek
+export PATH="/rhome/kmaroney/.local/lib/python2.7/site-packages/HTSeq:$PATH"
+export PATH="/rhome/kmaroney/.local/bin:$PATH"
+
+cd $SLURM_SUBMIT_DIR
+
+# Run samtools sort
+htseq-count --format=bam --minaqual 50 --stranded=no --idattr=gene_id ${sample}.nameSorted.bam /bigdata/messaoudilab/kmaroney/Projects/LCMV_specific_CD8Tcells/cuffmergeSummary/merged.gtf > ${sample}.genecounts
+
+ 
+squeue -l $SLURM_JOBID 
+
+# Submit with countreads_job_submit.sh:
+
+
+for S in  sample sample sample sample
+
+do
+ sbatch --export=sample="$S" countreads.sh
+done
+
+#If it's working (yay you!) it should look something like this when you tail -f slurm-<ID> 
+#just let it finish - the end output should just be *genecounts for each of your samples - these will each be 2 columns - the "gene_id" or w/e you chose and the counts -> you see where this is going yeah?........ (psst -> countDFeByg.xls)
+
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/condabin/conda
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/bin/conda
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/bin/conda-env
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/bin/activate
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/bin/deactivate
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/etc/profile.d/conda.sh
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/etc/fish/conf.d/conda.fish
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/shell/condabin/Conda.psm1
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/shell/condabin/conda-hook.ps1
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/lib/python2.7/site-packages/xontrib/conda.xsh
+no change     /opt/linux/centos/7.x/x86_64/pkgs/miniconda2/4.4.10/etc/profile.d/conda.csh
+no change     /rhome/kmaroney/.bashrc
+No action taken.
+100000 GFF lines processed.
+200000 GFF lines processed.
+300000 GFF lines processed.
+400000 GFF lines processed.
+481912 GFF lines processed.
+100000 SAM alignment records processed.
+200000 SAM alignment records processed.
+300000 SAM alignment records processed.
+400000 SAM alignment records processed.
+500000 SAM alignment records processed.
+600000 SAM alignment records processed.
+700000 SAM alignment records processed.
+800000 SAM alignment records processed.
+900000 SAM alignment records processed.
+1000000 SAM alignment records processed.
+1100000 SAM alignment records processed.
+1200000 SAM alignment records processed.
+1300000 SAM alignment records processed.
+1400000 SAM alignment records processed.
+1500000 SAM alignment records processed.
+1600000 SAM alignment records processed.
+1700000 SAM alignment records processed.
+1800000 SAM alignment records processed.
+
+
+#Assemble count matrix and get RPKM normalization
+#Once counting is done, go into the main directory and 
+"module load R/3.5.0"
+
+start R
+load in all the gene_counts by the same names as you have them in your targets files (except for samples skipped because of alignment or PCA) - will each be a separate column - can be made into a matrix (like in SystemPipeR ;) ).
+Naive_WT_3 <- read.table('./read_counts/Naive_WT_3_S3_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep='\t', as.is=T, header=FALSE)
+Naive_WT_2 <- read.table('./read_counts/Naive_WT_2_S2_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep='\t', as.is=T, header=FALSE)
+Naive_WT_1 <- read.table('./read_counts/Naive_WT_1_S1_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep='\t', as.is=T, header=FALSE)
+Naive_KO_3 <- read.table('./read_counts/Naive_KO_3_S6_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep='\t', as.is=T, header=FALSE)
+Naive_KO_2 <- read.table('./read_counts/Naive_KO_2_S5_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+Naive_KO_1 <- read.table('./read_counts/Naive_KO_1_S4_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d9_WT_GP33_3 <- read.table('./read_counts/Day09_WT_GP33_3_S9_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d9_WT_GP33_1 <- read.table('./read_counts/Day09_WT_GP33_1_S7_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d9_WT_GP33_2 <- read.table('./read_counts/Day09_WT_GP33_2_S8_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d9_KO_GP33_3 <- read.table('./read_counts/Day09_KO_GP33_3_S12_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d9_KO_GP33_2 <- read.table('./read_counts/Day09_KO_GP33_2_S11_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d9_KO_GP33_1 <- read.table('./read_counts/Day09_KO_GP33_1_S10_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d30_WT_GP33_3 <- read.table('./read_counts/Day30_WT_GP33_3_S15_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d30_WT_GP33_2 <- read.table('./read_counts/Day30_WT_GP33_2_S14_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d30_WT_GP33_1 <- read.table('./read_counts/Day30_WT_GP33_1_S13_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d30_KO_GP33_3 <- read.table('./read_counts/Day30_KO_GP33_3_S18_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d30_KO_GP33_2 <- read.table('./read_counts/Day30_KO_GP33_2_S17_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+d30_KO_GP33_1 <- read.table('./read_counts/Day30_KO_GP33_1_S16_L001_L002_R1_001_trimmed.fq.gz.tophat.genecounts', sep="\t", as.is=T, header=FALSE)
+
+#Load Libraries
+library(systemPipeR) 
+library(GenomicFeatures) 
+library(BiocParallel) 
+library(ape) 
+library(DESeq2) 
+library(edgeR)
+
+#Then make your own countDFeByg matrix
+countDFeByg <- data.frame(Naive_WT_3[,2], Naive_WT_2[,2], Naive_WT_1[,2], Naive_KO_3[,2], Naive_KO_2[,2], Naive_KO_1[,2], d9_WT_GP33_3[,2], d9_WT_GP33_2[,2], d9_WT_GP33_1[,2], d9_KO_GP33_3[,2], d9_KO_GP33_2[,2], d9_KO_GP33_1[,2], d30_WT_GP33_3[,2], d30_WT_GP33_2[,2], d30_WT_GP33_1[,2], d30_KO_GP33_3[,2], d30_KO_GP33_2[,2], d30_KO_GP33_1[,2])
+row.names(countDFeByg) = Naive_WT_3[,1]
+# the row.names portion just tells it to take the "gene" or "transcripts" or "ENSEMBLID" or w/e you counted to as the row names (should be sorted the same in each sample from before - make sure this is the leftmost column as your annotation file (can rearrange in excel if you want) so that when you cbind, it is easy for you.
+
+#Ignore lines without features
+toRmv <- which(grepl("_", Naive_WT_1[,1]))
+countDFeByg <- countDFeByg[-toRmv,]
+write.table(countDFeByg, "results/countDFeByg.xls", col.names=NA, quote=FALSE, sep="\t")
+
+#exit R, and edit your countDFeByg.xls file so that the sample names align with what is in your targets file
+
+#Make a new sqlite file of your merged.gtf as such (within cuffmergeSummary):
+txdb <- makeTxDbFromGFF(file="merged.gtf", format="auto", dataSource="Cufflinks_LCMV_Tinoco", organism="Mus musculus")
+saveDb(txdb, file="merged.sqlite")
+
+#Re-enter R in main
+#Get your transcript counts
+txdb <- loadDb("./cuffmergeSummary/merged.sqlite") 
+tByg <- transcriptsBy(txdb, by=c("gene"))
+
+#Get RPKM normalization
+countDFeByg <- read.delim("results/countDFeByg.xls", sep="\t", header=TRUE, row.names=1)
+rpkmDFeByg <- apply(countDFeByg, 2, function(x) returnRPKM(counts=x, ranges=tByg))
+write.table(rpkmDFeByg, "results/rpkmDFeByg.xls", col.names=NA, quote=FALSE, sep="\t")
+
+# TPM normalization
+# TPM Conversion 
+# Genes length table need to be generated only once per annotation file
+# The original version of the script below also calculates GC content (https://github.com/dpryan79/Answers/blob/master/SEQanswers_42420/GTF2LengthGC.R)                  
+library(GenomicRanges)
+library(rtracklayer)
+library(Rsamtools)
+GTFfile = "../../Reference_Genomes/Mus_Musculus/mm10/mm10.refGene.gtf"                    
+#Load the annotation and reduce it                    
+GTF <- import.gff(GTFfile, format="gtf", feature.type="exon")             
+grl <- reduce(split(GTF, elementMetadata(GTF)$gene_id))
+reducedGTF <- unlist(grl, use.names=T)                    
+elementMetadata(reducedGTF)$gene_id <- rep(names(grl), elementNROWS(grl))
+elementMetadata(reducedGTF)$widths <- width(reducedGTF)                    
+#Create a list of the ensembl_id/length                    
+calc_length <- function(x) {   
+  sum(elementMetadata(x)$widths)
+}
+output <- t(sapply(split(reducedGTF, elementMetadata(reducedGTF)$gene_id), calc_length))
+output <- t(output)                    
+colnames(output) <- c("Length")                    
+write.table(output, file="./results/lengths.txt", sep="\t")
+genes <- read.delim("./results/lengths.txt", sep="\t", header=T)
+genes$Length <- genes$Length/1000
+# Table below gives you length of genes (exons) in kpb.                    
+write.table(genes, file="./results/lengths.txt", sep="\t")
+# Read the raw counts and gene lengths files, and TPM formula
+counts <- read.delim("results/countDFeByg.xls", row.names=1, check.names=FALSE)
+genelengths <- read.delim("./results/lengths.txt", sep="\t", header=T, row.names=1)
+tpm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(rate) * 1e6
+}
+tpms <- apply(counts, 2, function(x) tpm(x, genelengths$length))
+NAMES <- row.names(genelengths)
+row.names(tpms) <- NAMES
+write.table(tpms, "./results/TPM.xls", quote=FALSE, sep="\t", col.names=NA)
+
+
+
+#Previous pipeline (HT-seq)
+create txtdb object - note: may get a bus error when doing this step - if you already have the .sqlite file, skip it
+txdb <- makeTxDbFromGFF(file="./data/Macaca_fascicularis.Macaca_fascicularis_5.0.94.gtf", format="gtf", dataSource="ENSEMBL", organism="Macaca fascicularis") 
+saveDb(txdb, file="./data/Macaca_fascicularis.sqlite")
+
+make these objects again - it's not safe to go alone
+targets <- read.delim("targets.txt", comment.char = "#") 
+targets
+args <- systemArgs(sysma="tophat.param", mytargets="targets.txt") 
+file.exists(outpaths(args))
+
+The following performs read counting with summarizeOverlaps in parallel mode with multiple cores
+ txdb <- loadDb("../../../../Reference_Genomes/Mus_Musculus/mm10/mm10.refGene.sqlite") 
+ eByg <- exonsBy(txdb, by=c("gene")) 
+or tByg <- transcriptsBy(txdb, by=c("gene")) if want to count by transcript
+bfl <- BamFileList(outpaths(args), yieldSize=50000, index=character()) 
+multicoreParam <- MulticoreParam(workers=8); register(multicoreParam); registered() 
+counteByg <- bplapply(bfl, function(x) summarizeOverlaps(eByg, x, mode="Union", ignore.strand=FALSE, inter.feature=TRUE, singleEnd=TRUE))
+
+Wait until read counting is done, then write countDFeByg into an excel file
+countDFeByg <- sapply(seq(along=counteByg), function(x) assays(counteByg[[x]])$counts) 
+rownames(countDFeByg) <- names(rowRanges(counteByg[[1]])); colnames(countDFeByg) <- names(outpaths(args)) 
+write.table(countDFeByg, "results/countDFeByg.xls", col.names=NA, quote=FALSE, sep="\t")
+
+Generate RPKM normalized expression values from the countDFeByg file
+rpkmDFeByg <- apply(countDFeByg, 2, function(x) returnRPKM(counts=x, ranges=tByg)) 
+write.table(rpkmDFeByg, "results-mm10/rpkmDFeByg.xls", col.names=NA, quote=FALSE, sep="\t")
+
+8. Correlation/clustering Analysis
+Before running DEG analysis with edgeR, it's important to visualize the transcriptional profiles of each sample in order to determine if any samples are outliers and need to be removed. Hierarchical clustering or PCA clustering will give you an indication of the magnitude of transcriptional changes following edgeR analysis. An outlier should be removed if the library size or alignment rate is poor (less than 10 million reads and less than 50% alignment)
+The next sections go over generating graphs of either tree clusters or PCAs.
+NOTE: The minimum required files you need to generate tree clusters or PCAs is the "targets.txt", "countDFeByg.xls", and "rpkmDFeByg.xls", which was generated in step 6.
+When subsetting out samples that don't cluster well on PCA, comment those sample lines in targets.txt. and after loading in data (for new PCA) as matrix, subset with countDF <- countDF[,"column number"]
+
+Sample-wise Spearman correlation using RPKM
+library(ape) 
+targets <- read.delim("targets.txt", comment="#")
+rpkmDFeByg <- read.delim("./results/rpkmDFeByg.xls", row.names=1, check.names=FALSE)[,-19] 
+rpkmDFeByg <- rpkmDFeByg[rowMeans(rpkmDFeByg) > 50,] 
+d <- cor(rpkmDFeByg, method="spearman") 
+hc <- hclust(as.dist(1-d)) 
+pdf("results/sample_tree.pdf") 
+plot.phylo(as.phylo(hc), type="p", edge.col="blue", edge.width=2, show.node.label=TRUE, no.margin=TRUE) 
+dev.off()
+
+Sample-wise Spearman correlation using rlog transformed counts data
+The following computes the sample-wise Spearman correlation coefficients from the rlog (regularized-logarithm) transformed expression values generated with the DESeq2 package to make correlation dendrogram of samples for rlog values.
+
+library(DESeq2) 
+targets <- read.delim("targets.txt", comment="#")
+countDF <- as.matrix(read.table("./results/countDFeByg.xls")) 
+colData <- data.frame(row.names=targets$SampleName, condition=targets$Factor) 
+dds <- DESeqDataSetFromMatrix(countData = countDF, colData = colData, design = ~ condition) 
+d <- cor(assay(rlog(dds)), method="spearman") 
+hc <- hclust(dist(1-d)) pdf("results/sample_tree_rlog.pdf") 
+plot.phylo(as.phylo(hc), type="p", edge.col=4, edge.width=3, show.node.label=TRUE, no.margin=TRUE) 
+dev.off()
+
+PCA Plot to create group-wise PCA plots using rlog normalized counts
+library(DESeq2) 
+targets <- read.delim("targets.txt", comment="#")
+countDF <- as.matrix(read.table("./results/countDFeByg.xls")) 
+colData <- data.frame(row.names=targets$SampleName, condition=targets$Factor) 
+dds <- DESeqDataSetFromMatrix(countData = countDF, colData = colData, design = ~ condition) 
+rld <- rlog(dds) pdf("results/PCA_group.pdf") 
+plotPCA(rld) 
+dev.off()
+
+PCA plot to create sample-wise PCA plots using rlog normalized counts
+library(DESeq2) 
+targets <- read.delim("targets.txt", comment="#")
+countDF <- as.matrix(read.table("./results/countDFeByg.xls")) 
+colData <- data.frame(row.names=targets$SampleName, condition=targets$SampleName) 
+dds <- DESeqDataSetFromMatrix(countData = countDF, colData = colData, design = ~ condition) 
+rld <- rlog(dds) 
+pdf("results/PCA_sample.pdf") 
+plotPCA(rld) 
+dev.off()
+
+PCA Plot to create group-wise PCA plots using vsd normalized counts
+library(DESeq2) 
+targets <- read.delim("targets.txt", comment="#")
+countDF <- as.matrix(read.table("./results/countDFeByg.xls")) 
+colData <- data.frame(row.names=targets$SampleName, condition=targets$Factor) 
+dds <- DESeqDataSetFromMatrix(countData = countDF, colData = colData, design = ~ condition) 
+#possibly may have to do this if get an error:
+colnames(countDF) <- NULL
+vsd <- varianceStabilizingTransformation(dds) 
+pdf("results/PCA_group_vsd.pdf") 
+plotPCA(vsd) 
+dev.off()
+
+PCA plot to create sample-wise PCA plots using vsd normalized counts
+library(DESeq2) 
+targets <- read.delim("targets.txt", comment="#")
+countDF <- as.matrix(read.table("./results/countDFeByg.xls")) 
+colData <- data.frame(row.names=targets$SampleName, condition=targets$SampleName) 
+dds <- DESeqDataSetFromMatrix(countData = countDF, colData = colData, design = ~ condition) 
+vsd <- varianceStabilizingTransformation(dds) 
+pdf("results/PCA_sample_vsd.pdf") 
+plotPCA(vsd) 
+dev.off()
+
+Determining significance of PCA dimensions on clustering
+library(vegan)
+library(ggplot2)
+library(grid)
+
+#get distance matrix for pca (post vsd object creation)
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+write.table(sampleDistMatrix, "./results/distmat.txt",sep = "\t", quote=FALSE) 
+
+Here you will get a matrix that looks like this (distmat.txt):
+
+	Mali.198.d0	Mali.198.d4	Mali.198.d6	Mali.199.d0	Mali.199.d4	Mali.199.d6	Mali.200.d0	Mali.200.d4	Mali.200.d6
+Mali.198.d0	0	92.888028	95.9243862	80.8678226	93.9506921	96.921835	86.2241641	100.980303	100.139195
+Mali.198.d4	92.888028	0	82.1164035	89.1870008	82.4785313	87.1485064	93.4086838	84.1862544	87.4144226
+Mali.198.d6	95.9243862	82.1164035	0	90.5356001	82.3799811	81.5521125	94.8707974	83.3187966	80.755838
+Mali.199.d0	80.8678226	89.1870008	90.5356001	0	81.515692	83.4866285	66.2582062	95.1693487	91.8035554
+Mali.199.d4	93.9506921	82.4785313	82.3799811	81.515692	0	81.3816395	86.9240269	81.7756375	85.9220515
+Mali.199.d6	96.921835	87.1485064	81.5521125	83.4866285	81.3816395	0	88.6571639	89.264124	82.5598847
+Mali.200.d0	86.2241641	93.4086838	94.8707974	66.2582062	86.9240269	88.6571639	0	96.8918723	95.2625147
+Mali.200.d4	100.980303	84.1862544	83.3187966	95.1693487	81.7756375	89.264124	96.8918723	0	84.2843041
+Mali.200.d6	100.139195	87.4144226	80.755838	91.8035554	85.9220515	82.5598847	95.2625147	84.2843041	0
+
+This above shows the percentage by which 2 different samples vary between eachother (for example above, 0 means these overlap completely because they are the same sample, but d0 and d4 vary quite a lot between eachother (92, 93, 94% etc.) while 2 d0 replicates do not vary nearly as much between themselves (around 80% or so))
+
+# Next, make a matrix defining your parameters for comparison to see which variables are the source of most of the variability (is it the days, the animal, or some other condition (experimental vs control, what?)) as "targets_all.txt" or in this case ANOVA-targets.txt for the ANOVA stats test as so (but use nano, not excel):
+
+SampleID	Animal	Day	Other_Factor?
+
+Mali.198.d0	198	d0	Hey
+Mali.198.d4	198	d4	Hey
+Mali.198.d6	198	d6	Listen
+Mali.199.d0	199	d0	Hey
+Mali.199.d4	199	d4	Hey
+Mali.199.d6	199	d6	Listen
+Mali.200.d0	200	d0	Hey
+Mali.200.d4	200	d4	Hey
+Mali.200.d6	200	d6	Listen
+
+##,guide=F
+inDis = read.table ("./results/distmat.txt", header=TRUE, row.names=1, sep='\t', check.names=FALSE, comment.char="")
+# mapping file
+map = read.table("./results/ANOVA-targets.txt", header=T, sep='\t', row.names=1, check.names=F, comment.char='')
+
+##Run the ANOVA:
+stats2 = adonis(inDis~map$Factor, permutations=1000)
+stats2
+
+You can sub out "Factor" for the factor you want to analyze as above (Animal, Day, etc.)
+OR you can even nest one factor within another if you are unsure whether only that one factor is responsibile for the variability: instead of "inDis~map$Day" do "inDis~map$Day/map$Animal" to look at whether even without the differentiation of one factor the effect of the other factor on the variability is significant enough to account for the variability
+
+#interpreting data
+Look at the R-squared value to see the amount of variability, and the p value (Pr(>F)) to look at significance of the variable!
+
+9. DEG Analysis with edgeR
+Load required libraries
+library(systemPipeR) 
+library(edgeR)
+
+Read in raw counts file and targets.txt file
+countDF <- read.delim("results/countDFeByg.xls", row.names=1, check.names=FALSE) 
+targets <- read.delim("targets.txt", comment="#")
+
+Make sure that if you needed to subset anything earlier, to subset the countDF file again
+
+Define comparisons to be made
+cmp <- readComp(file="targets.txt", format="matrix", delim="-")
+
+Run edgeR
+edgeDF <- run_edgeR(countDF=countDF, targets=targets, cmp=cmp[[1]], independent=TRUE, mdsplot="")
+
+write.table(edgeDF, "edgeDF.xls", sep="\t")
+
+#exit R
+#in nano, name the first column of edgeDF.xls to match annotation file
+
+Add descriptions to the edgeDF file
+The output of edgeDF will give you statistical information for each gene which is identified by an ensembl ID.
+In order to annotate each ensembl ID with additional information (HGNC symbol, description, gene type, etc), use Biomart: http://uswest.ensembl.org/biomart/martview/f63abf59cf05faef9ee3b9c3a175acf3
+In Biomart: 1) choose the species: 2) choose information you want HGNC symbols, description, gene types, etc; 3) download excel file and save the corresponding directory where reference genome is located. See Cynomolgus_genes_5.0.94.txt as an example
+in R, read in the annotation file and save as object "desc"
+
+desc <-read.delim("/bigdata/messaoudilab/kmaroney/Reference_Genomes/Rhesus_Macaque/Rhesus_annotations_updated.xls")
+edgeDF <- read.delim("edgeDF.xls", sep="\t")
+edgeDF <- merge(edgeDF, desc, by.x="Gene", by.y="Gene", sep="\t", all=TRUE)
+
+Bind annotation file to edgeDF file
+edgeDF <- cbind(edgeDF, desc[rownames(edgeDF),])
+
+Write annotated edgeDF file
+write.table(edgeDF, "./results/edgeRglm_allcomp.xls", quote=FALSE, sep="\t", row.names=FALSE)
+
+Obtain summary data
+edgeDF <- read.delim("results/edgeRglm_allcomp.xls", row.names=1, check.names=FALSE) 
+pdf("results/DEGcounts.pdf") 
+DEG_list <- filterDEGs(degDF=edgeDF, filter=c(Fold=2, FDR=5)) 
+dev.off() 
+write.table(DEG_list$Summary, "./results/DEGcounts.xls", quote=FALSE, sep="\t", row.names=FALSE)
+
+10 Merge EdgeR file with RPKM file
+Merge RPKM file (rpkmDFeByg.xls) and edgeR file (edgeRglm_allcomp.xls) (these files should be in the ‘results’ directory)
+nano rpkmDFeByg.xls and write a header “RhesusEnsembl” on top of ensembl column. (Header is subject to change depending on project)
+nano rpkmDFeByg.xls
+
+nano edgeRglm_allcomp.xls and a header “CynoEnsembl” (or whatever Ensembl it is by species) on top of ensembl column. (Header is subject to change depending on project)
+nano edgeRglm_allcomp.xls and do the same
+
+Make sure you are in the ‘results’ directory when running the following in R
+Follow the example commands down below to merge the data in the two files to create ‘edgeR_rpkm.xls’
+edgeR <- read.delim("edgeRglm_allcomp.xls", sep="\t", header=TRUE) 
+rpkm <- read.delim("rpkmDFeByg.xls", sep="\t", header=TRUE) 
+TPM <- read.delim("TPM.xls", sep="\t", header=TRUE)
+edgeR_rpkm <- merge(edgeR, rpkm, by.x="Gene", by.y="Gene", all=TRUE) 
+write.table(edgeR_rpkm, file="edgeR_rpkm.xls", sep="\t", col.names=TRUE, row.names=FALSE, quote=FALSE)
+edgeR_TPM <- merge(edgeR, TPM, by.x="Gene", by.y="Gene", all=TRUE) 
+write.table(edgeR_TPM, file="edgeR_TPM.xls", sep="\t", col.names=TRUE, row.names=FALSE, quote=FALSE)
